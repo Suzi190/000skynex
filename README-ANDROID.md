@@ -18,6 +18,10 @@ Web 内容一行没改（只在打包时往 `</body>` 前插一个 `native-shell
 
 > 也可以手动触发：Actions → `Build Android APK` → `Run workflow`。
 
+> **看版本**：`skynex APK (latest)` 的说明第一行会写「版本 1.0.4 (5) · commit xxxxxxx」，是构建时从
+> `android/app/build.gradle` 里读出来的。如果装完发现还是旧版（浏览器 / CDN 缓存了旧文件），
+> 换个网络重下一次，或者直接从 Actions 最近一次成功 run 的 `Artifacts` 里拿。
+
 > **升级注意**：1.0.0 是 CI 每次随机签名的，和现在的包对不上，**只影响 1.0.0 → 1.0.1 这一次**
 > （需要先卸载旧版再装）。1.0.1 起签名固定在仓库的 `android/app/debug.keystore`（CI 首次构建时生成并提交），
 > 所以 **1.0.1 / 1.0.2 / 1.0.3 → 1.0.4 直接覆盖安装就行**，存档不会丢。

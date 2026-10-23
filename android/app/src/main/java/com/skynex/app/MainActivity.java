@@ -19,7 +19,6 @@ import android.webkit.WebView;
 import android.widget.Toast;
 
 import androidx.activity.OnBackPressedCallback;
-import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -31,9 +30,11 @@ import com.getcapacitor.BridgeActivity;
  * skynex 的 Android 壳。
  *
  * 三件事：
- *  1. 全屏沉浸式：隐藏状态栏 + 导航栏（上滑临时呼出），内容铺满屏幕；
- *  2. 键盘不挡输入框：API 30+ 监听 IME inset 给 WebView 撑出底部空间，
- *     API < 30 退回「窗口跟随键盘缩放」（老系统拿不到 ime() inset）；
+ *  1. 全屏沉浸式：decorFitsSystemWindows=false + 隐藏状态栏/导航栏（上滑临时呼出），
+ *     WebView 铺满整屏（含刘海/挖孔区域，没有黑边）；
+ *  2. 键盘不挡输入框：自己量键盘高度（API 30+ 用 ime() inset，老系统用
+ *     getWindowVisibleDisplayFrame 差值），给 WebView 加 bottomMargin 让它真的变矮，
+ *     网页 viewport 随之变小，输入框就被顶到键盘上方；
  *  3. 返回不退出应用：系统返回键 / 边缘右滑返回 → 先走 WebView 的 history（应用自己
  *     用 popstate 实现了逐层返回），真的没得退了才「再按一次退出」。
  */
@@ -43,21 +44,23 @@ public class MainActivity extends BridgeActivity {
     private static final long EXIT_WINDOW_MS = 2000L;
 
     private long lastBackAt = 0L;
+    /** 当前键盘高度（px）；0 = 键盘收起 */
     private int imeBottom = 0;
-    /** 见过的最大的 decorView 高度（全屏时的高度），用来判断键盘是否把窗口顶矮了 */
-    private int maxDecorHeight = 0;
+    /** 最近一次从 WindowInsets 拿到的 ime inset（API 30+ 精确值） */
+    private int imeInsetBottom = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         Window window = getWindow();
 
-        // ── 键盘避让：让窗口自己随键盘缩放（adjustResize） ──
-        // 这是 WebView 上最可靠的路径：窗口真的变矮 → 网页 viewport 跟着变小 →
-        // 聚焦的输入框由 WebView 自己滚进可视区。Android 15 会对 targetSdk>=35 的应用
-        // 强制 edge-to-edge 从而废掉 adjustResize，这里用 res/values-v35/themes.xml 的
-        // windowOptOutEdgeToEdgeEnforcement 显式退出（全屏靠 hide() 隐藏系统栏，不受影响）。
-        WindowCompat.setDecorFitsSystemWindows(window, true);
-        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        // ── 真·全屏：内容一直画到屏幕最上沿（状态栏 / 刘海 / 挖孔区域）──
+        // 注意：decorFitsSystemWindows=true 时系统会给窗口留出刘海高度的安全区，
+        // 在刘海机上顶部就是一条黑边（1.0.1 的回归）。所以要 false，让 WebView 铺满整屏。
+        // 代价是窗口不再随键盘缩放，键盘高度由 installKeyboardWatcher() 自己量：
+        // API 30+ 取 ime() inset，老系统用 getWindowVisibleDisplayFrame() 差值，
+        // 再给 WebView 加 bottomMargin（不能用 padding，padding 不改变网页 viewport）。
+        WindowCompat.setDecorFitsSystemWindows(window, false);
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             WindowManager.LayoutParams lp = window.getAttributes();
@@ -76,7 +79,7 @@ public class MainActivity extends BridgeActivity {
             webView.setBackgroundColor(0xFF0F0F0F);
             webView.addJavascriptInterface(new ShellBridge(this), "AndroidShell");
             webView.setDownloadListener(this::onDownloadRequest);
-            applyKeyboardInsets(webView);
+            installKeyboardWatcher(webView);
         }
 
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
@@ -99,43 +102,58 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
-     * 键盘兜底（正常路径用不到，adjustResize 已经把窗口缩小了）。
+     * 键盘适配：量出键盘高度，给 WebView 加 bottomMargin，让它真的变矮。
      *
-     * 少数情况窗口不会随键盘缩放：强制 edge-to-edge 生效的机型、个别 ROM 不支持
-     * adjustResize 等。这时 ime inset 会给出键盘高度，给 WebView 加 bottomMargin
-     * 让它真的变矮 —— 网页 viewport 随之变小，输入栏（fixed bottom）整体上移。
-     *
-     * 注意：这里绝对不能用 setPadding。WebView 的网页视口取自 View 的 width/height，
-     * padding 只影响绘制区域，window.innerHeight 不会变，输入框照样被键盘盖住
-     * （第一版就是用 padding，真机上完全没效果，这就是键盘挡输入框的原因）。
+     * 为什么要自己量：decorFitsSystemWindows=false（真全屏）时窗口不会随键盘缩放，
+     * 必须自己让出空间，否则输入框会被键盘盖住。
+     * 为什么用 margin 不用 padding：WebView 的网页视口取自 View 的 width/height，
+     * padding 只影响绘制，window.innerHeight 不变，页面根本不知道键盘来了。
      */
-    private void applyKeyboardInsets(WebView webView) {
+    private void installKeyboardWatcher(WebView webView) {
+        View decor = getWindow().getDecorView();
+
+        // API 30+：ime() inset 是最准的值（键盘正好抬起/收起时会派发）
         ViewCompat.setOnApplyWindowInsetsListener(webView, (v, insets) -> {
-            Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
-            imeBottom = ime.bottom;
-            final int bottom = ime.bottom;
-            // 等这一帧布局稳定后再量高度，避免拿到过渡态
-            v.post(() -> {
-                if (bottom == 0) {
-                    // 键盘收起时顺手记录全屏高度，返回键判断键盘是否弹出要用
-                    int h = getWindow().getDecorView().getHeight();
-                    if (h > maxDecorHeight) maxDecorHeight = h;
-                }
-                setBottomMargin(v, shouldCompensate(bottom) ? bottom : 0);
-            });
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                imeInsetBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            }
+            v.post(this::updateKeyboardState);
             return insets;
         });
         ViewCompat.requestApplyInsets(webView);
+
+        // 全版本兜底：布局变化时用可见区域反推键盘高度。
+        // （老系统拿不到 ime() inset；个别 ROM 也不派发，靠这个补）
+        decor.getViewTreeObserver().addOnGlobalLayoutListener(this::updateKeyboardState);
     }
 
-    /** 窗口没被 adjustResize 缩小、却又有键盘 inset 时，才需要我们自己补 */
-    private boolean shouldCompensate(int imeBottom) {
-        if (imeBottom <= 0) return false;
+    /** 量键盘高度 → 调整 WebView 高度。键盘弹出/收起、转屏、导航栏变化都会走到这里 */
+    private void updateKeyboardState() {
+        WebView webView = (bridge == null) ? null : bridge.getWebView();
+        if (webView == null) return;
         View decor = getWindow().getDecorView();
+        if (decor.getHeight() <= 0) return;
+
+        int kb = imeInsetBottom;
+
+        // getWindowVisibleDisplayFrame 给的是屏幕坐标，和 decor 的屏幕底边相减就是被挡住的高度
         Rect visible = new Rect();
         decor.getWindowVisibleDisplayFrame(visible);
-        // 窗口已经缩到键盘上方（decor 高度 == 可见区域高度）→ 系统让位了，不要再加，否则底部双倍空白
-        return decor.getHeight() > visible.height() + 8;
+        int[] loc = new int[2];
+        decor.getLocationOnScreen(loc);
+        int frameKb = Math.max(0, loc[1] + decor.getHeight() - visible.bottom);
+        if (frameKb > kb) kb = frameKb;
+
+        // 过滤噪声：手势条/导航栏这些残值通常 < 48dp，键盘至少 150dp
+        if (kb < dp(80)) kb = 0;
+
+        if (kb != imeBottom) Log.i(TAG, "keyboard=" + kb + " (inset=" + imeInsetBottom + ", frame=" + frameKb + ")");
+        imeBottom = kb;
+        setBottomMargin(webView, kb);
+    }
+
+    private int dp(int v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
     /** 改变 WebView 的真实高度（网页 viewport 会跟着变），而不是 padding */
@@ -146,20 +164,11 @@ public class MainActivity extends BridgeActivity {
         if (mlp.bottomMargin == bottom) return;
         mlp.bottomMargin = bottom;
         view.setLayoutParams(mlp);
-        Log.i(TAG, "webview bottomMargin=" + bottom);
     }
 
-    /** 键盘是否真的在显示：优先看 ime inset，其次看窗口是不是被顶矮了（adjustResize 路径） */
+    /** 键盘是否在显示（返回键先用它收键盘，而不是直接退页面） */
     private boolean isKeyboardVisible() {
-        if (imeBottom > 0) return true;
-        View decor = getWindow().getDecorView();
-        int h = decor.getHeight();
-        if (h <= 0) return false;
-        if (h > maxDecorHeight) {
-            maxDecorHeight = h; // 全屏时的基准高度
-            return false;
-        }
-        return maxDecorHeight - h > 60;
+        return imeBottom > 0;
     }
 
     /**
@@ -173,7 +182,10 @@ public class MainActivity extends BridgeActivity {
         if (webView != null && isKeyboardVisible()) {
             InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
             if (imm != null) imm.hideSoftInputFromWindow(webView.getWindowToken(), 0);
+            // 立刻收起留白（insets 会再确认一次）
             imeBottom = 0;
+            imeInsetBottom = 0;
+            setBottomMargin(webView, 0);
             return;
         }
 

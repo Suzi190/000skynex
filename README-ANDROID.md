@@ -18,17 +18,18 @@ Web 内容一行没改（只在打包时往 `</body>` 前插一个 `native-shell
 
 > 也可以手动触发：Actions → `Build Android APK` → `Run workflow`。
 
-> **升级注意（只影响 1.0.0 → 1.0.1 这一次）**：1.0.0 是 CI 每次随机签名的，和 1.0.1 的签名对不上，
-> 所以这一版需要**先卸载旧版再装**。1.0.1 起签名固定在仓库的 `android/app/debug.keystore`（CI 首次构建时生成并提交），
-> 以后覆盖安装直接升级，不会丢数据。
-> 旧版里的存档请先在应用内「导出」到 `下载/skynex/`，装好新版再「导入」即可。
+> **升级注意**：1.0.0 是 CI 每次随机签名的，和现在的包对不上，**只影响 1.0.0 → 1.0.1 这一次**
+> （需要先卸载旧版再装）。1.0.1 起签名固定在仓库的 `android/app/debug.keystore`（CI 首次构建时生成并提交），
+> 所以 **1.0.1 → 1.0.2 直接覆盖安装就行**，存档不会丢。
+> 还停在 1.0.0 的话，请先在应用内「导出」到 `下载/skynex/`，装好新版再「导入」。
 
 ## 二、四个需求的实现位置
 
 | 需求 | 实现 |
 | --- | --- |
 | 全屏沉浸式、隐藏状态栏 | `android/app/src/main/java/com/skynex/app/MainActivity.java` → `hideSystemBars()`：`WindowInsetsControllerCompat.hide(systemBars())` + `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`（上滑可临时呼出）；`onWindowFocusChanged`/`onResume` 里重新隐藏。窗口背景色 `#0F0F0F`，刘海用 `displayCutout` inset 顶开，不会露白边。 |
-| 键盘不挡输入框 | 走系统原生 `adjustResize`：`MainActivity` 里 `setDecorFitsSystemWindows(true)` + `SOFT_INPUT_ADJUST_RESIZE`，键盘弹出时窗口真的变矮，网页 viewport 随之变小，输入框自动滚进可视区。Android 15 会对 targetSdk≥35 的应用强制 edge-to-edge、把 `adjustResize` 废掉，所以 `res/values-v35/themes.xml` 用 `windowOptOutEdgeToEdgeEnforcement` 显式退出（全屏靠 `hide()` 隐藏系统栏，不受影响）。兜底：`applyKeyboardInsets()` 监听 `ime()` inset，窗口没缩时给 WebView 加 **bottomMargin**（不能用 padding，WebView 的网页视口取 View 的 width/height，padding 只影响绘制、`window.innerHeight` 不变，这也是 1.0.0 键盘挡输入框的原因）。 |
+| 真全屏（无黑边） | `decorFitsSystemWindows=false` + `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES` + `WindowInsetsControllerCompat.hide(systemBars())`，并让 WebView 直接铺满整屏（含状态栏/刘海区域）。注意 `decorFitsSystemWindows=true` 会退化成「刘海高度的安全区」，看起来就是顶部一条黑边。 |
+| 键盘不挡输入框 | `installKeyboardWatcher()` 自己量键盘高度：API 30+ 取 `WindowInsetsCompat.Type.ime()`，老系统用 `getWindowVisibleDisplayFrame()` 与 decor 底边相减；然后把高度以 **`bottomMargin`** 加到 WebView 上（**不能用 padding**：WebView 的网页视口取自 View 的 width/height，padding 只影响绘制，`window.innerHeight` 不变，页面感知不到键盘——1.0.0 就是这么踩坑的）。WebView 真的变矮后 viewport 跟着变小，输入框被顶到键盘上方。 |
 | 左→右滑返回上一页，而不是退出 | `handleBack()` + `getOnBackPressedDispatcher()`：系统返回键 / 全面屏边缘右滑返回 → 先看 `webView.canGoBack()`，有就 `goBack()`。应用自己用 `history` 锚点 + `popstate`（BackStack）实现了弹窗/面板/侧栏/手机内页的逐层返回，所以这里只需要走 history。真的退到底了才提示「再按一次返回退出应用」，2 秒内再按一次才 `moveTaskToBack`（退到后台，避免 20MB 页面重载）。键盘开着时返回键先收键盘。 |
 | 应用图标 | `assets/icon-source.jpg` 是原图，`scripts/gen-assets.ps1` 生成 `mipmap-*/ic_launcher.png`、`ic_launcher_round.png`、`ic_launcher_foreground.png`（自适应图标，前景缩进 66% 安全区）以及各密度 `splash.png`（深色背景 + 圆角白底 logo）。 |
 

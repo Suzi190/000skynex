@@ -1,5 +1,8 @@
 package com.skynex.app;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.app.DownloadManager;
 import android.content.Context;
 import android.graphics.Rect;
@@ -12,6 +15,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.view.animation.LinearInterpolator;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.URLUtil;
@@ -34,7 +38,8 @@ import com.getcapacitor.BridgeActivity;
  *     WebView 铺满整屏（含刘海/挖孔区域，没有黑边）；
  *  2. 键盘不挡输入框：自己量键盘高度（API 30+ 用 ime() inset，老系统用
  *     getWindowVisibleDisplayFrame 差值），给 WebView 加 bottomMargin 让它真的变矮，
- *     网页 viewport 随之变小，输入框就被顶到键盘上方；
+ *     网页 viewport 随之变小，输入框就被顶到键盘上方。margin 变化走动画：弹出时缩得比
+ *     系统键盘慢（否则输入框瞬间跳上去、键盘还没盖住，中间露一块黑），收起时立即恢复；
  *  3. 返回不退出应用：系统返回键 / 边缘右滑返回 → 先走 WebView 的 history（应用自己
  *     用 popstate 实现了逐层返回），真的没得退了才「再按一次退出」。
  */
@@ -48,6 +53,15 @@ public class MainActivity extends BridgeActivity {
     private int imeBottom = 0;
     /** 最近一次从 WindowInsets 拿到的 ime inset（API 30+ 精确值） */
     private int imeInsetBottom = 0;
+    /** 有没有真的收到过非零 ime inset；没收到说明这个 ROM 不派发，得靠可见区域反推 */
+    private boolean imeInsetSeen = false;
+
+    // 键盘弹出时 WebView 缩得比系统键盘(约 250ms)更慢，
+    // 这样 WebView 底边始终在键盘顶边之上，中间那条黑永远不会露出来。
+    private static final long KEYBOARD_SHOW_ANIM_MS = 300L;
+    private ValueAnimator marginAnimator;
+    /** 正在动画到的目标值，用来挡掉 global layout 每帧触发的重复重启 */
+    private int marginTarget = -1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -116,6 +130,7 @@ public class MainActivity extends BridgeActivity {
         ViewCompat.setOnApplyWindowInsetsListener(webView, (v, insets) -> {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 imeInsetBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+                if (imeInsetBottom > 0) imeInsetSeen = true;
             }
             v.post(this::updateKeyboardState);
             return insets;
@@ -134,26 +149,96 @@ public class MainActivity extends BridgeActivity {
         View decor = getWindow().getDecorView();
         if (decor.getHeight() <= 0) return;
 
-        int kb = imeInsetBottom;
-
-        // getWindowVisibleDisplayFrame 给的是屏幕坐标，和 decor 的屏幕底边相减就是被挡住的高度
-        Rect visible = new Rect();
-        decor.getWindowVisibleDisplayFrame(visible);
-        int[] loc = new int[2];
-        decor.getLocationOnScreen(loc);
-        int frameKb = Math.max(0, loc[1] + decor.getHeight() - visible.bottom);
-        if (frameKb > kb) kb = frameKb;
+        int frameKb = measureByVisibleFrame(decor);
+        int kb;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && imeInsetSeen) {
+            // insets 权威：它明确说了没有键盘 inset 时，别被滞后的可见区域骗住（否则收键盘后底部会留白）
+            kb = imeInsetBottom;
+        } else {
+            kb = Math.max(imeInsetBottom, frameKb);
+        }
 
         // 过滤噪声：手势条/导航栏这些残值通常 < 48dp，键盘至少 150dp
         if (kb < dp(80)) kb = 0;
 
         if (kb != imeBottom) Log.i(TAG, "keyboard=" + kb + " (inset=" + imeInsetBottom + ", frame=" + frameKb + ")");
         imeBottom = kb;
-        setBottomMargin(webView, kb);
+
+        // 动画进行中，测量抖动（滚动条、导航栏残值）不要打断它，否则会来回重启、越拖越慢
+        if (marginAnimator != null && marginAnimator.isRunning()
+                && Math.abs(kb - marginTarget) <= dp(24)) {
+            return;
+        }
+
+        animateBottomMargin(webView, kb);
+    }
+
+    /** 用「窗口可见区域」反推被键盘挡住的高度（屏幕坐标，和 decor 底边相减） */
+    private int measureByVisibleFrame(View decor) {
+        Rect visible = new Rect();
+        decor.getWindowVisibleDisplayFrame(visible);
+        int[] loc = new int[2];
+        decor.getLocationOnScreen(loc);
+        return Math.max(0, loc[1] + decor.getHeight() - visible.bottom);
     }
 
     private int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * 平滑地把 WebView 的底部留白调整到 target。
+     *
+     * 为什么弹出要动画：系统键盘是滑上来的（约 250ms）。如果 WebView 一次性缩到最终高度，
+     * 输入框会「嗖」地跳到键盘上方，而键盘还没盖上来，中间就露出一块纯黑的空档 —— 很难看。
+     * 这里让 WebView 缩得比键盘更慢（300ms 线性），底边始终压在键盘顶边之上，黑块就不会露出来。
+     *
+     * 为什么收起不动画：恢复全高时多出来的那块显示的是页面自己的背景（不是窗口黑底），
+     * 立刻展开反而干净利落；若做动画，WebView 长得比键盘落下去慢，又会露出黑边。
+     */
+    private void animateBottomMargin(View view, int target) {
+        if (target == marginTarget) return;
+        ViewGroup.LayoutParams lp = view.getLayoutParams();
+        if (!(lp instanceof ViewGroup.MarginLayoutParams)) return;
+
+        int current = ((ViewGroup.MarginLayoutParams) lp).bottomMargin;
+        marginTarget = target;
+
+        cancelMarginAnimator();
+
+        boolean shrinking = target > current; // 键盘弹出 / 键盘变高
+        if (!shrinking || current == target) {
+            setBottomMargin(view, target);
+            return;
+        }
+
+        ValueAnimator anim = ValueAnimator.ofInt(current, target);
+        anim.setDuration(KEYBOARD_SHOW_ANIM_MS);
+        anim.setInterpolator(new LinearInterpolator());
+        anim.addUpdateListener(a -> setBottomMargin(view, (int) a.getAnimatedValue()));
+        anim.addListener(new AnimatorListenerAdapter() {
+            private boolean canceled;
+
+            @Override
+            public void onAnimationCancel(Animator animation) {
+                canceled = true;
+            }
+
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                // 落在整数像素上，避免插值残值让底部差 1px
+                if (!canceled) setBottomMargin(view, target);
+            }
+        });
+        marginAnimator = anim;
+        anim.start();
+    }
+
+    private void cancelMarginAnimator() {
+        if (marginAnimator == null) return;
+        ValueAnimator running = marginAnimator;
+        marginAnimator = null;
+        running.cancel();
     }
 
     /** 改变 WebView 的真实高度（网页 viewport 会跟着变），而不是 padding */
@@ -182,9 +267,11 @@ public class MainActivity extends BridgeActivity {
         if (webView != null && isKeyboardVisible()) {
             InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
             if (imm != null) imm.hideSoftInputFromWindow(webView.getWindowToken(), 0);
-            // 立刻收起留白（insets 会再确认一次）
+            // 立刻收起留白（不带动画，返回键要的是干脆）
             imeBottom = 0;
             imeInsetBottom = 0;
+            cancelMarginAnimator();
+            marginTarget = 0;
             setBottomMargin(webView, 0);
             return;
         }
@@ -245,6 +332,12 @@ public class MainActivity extends BridgeActivity {
     public void onResume() {
         super.onResume();
         hideSystemBars();
+    }
+
+    @Override
+    public void onDestroy() {
+        cancelMarginAnimator();
+        super.onDestroy();
     }
 }
 

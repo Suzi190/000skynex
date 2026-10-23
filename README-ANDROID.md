@@ -20,16 +20,17 @@ Web 内容一行没改（只在打包时往 `</body>` 前插一个 `native-shell
 
 > **升级注意**：1.0.0 是 CI 每次随机签名的，和现在的包对不上，**只影响 1.0.0 → 1.0.1 这一次**
 > （需要先卸载旧版再装）。1.0.1 起签名固定在仓库的 `android/app/debug.keystore`（CI 首次构建时生成并提交），
-> 所以 **1.0.1 → 1.0.2 直接覆盖安装就行**，存档不会丢。
+> 所以 **1.0.1 / 1.0.2 → 1.0.3 直接覆盖安装就行**，存档不会丢。
 > 还停在 1.0.0 的话，请先在应用内「导出」到 `下载/skynex/`，装好新版再「导入」。
 
 ## 二、四个需求的实现位置
 
 | 需求 | 实现 |
 | --- | --- |
-| 全屏沉浸式、隐藏状态栏 | `android/app/src/main/java/com/skynex/app/MainActivity.java` → `hideSystemBars()`：`WindowInsetsControllerCompat.hide(systemBars())` + `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`（上滑可临时呼出）；`onWindowFocusChanged`/`onResume` 里重新隐藏。窗口背景色 `#0F0F0F`，刘海用 `displayCutout` inset 顶开，不会露白边。 |
+| 全屏沉浸式、隐藏状态栏 | `android/app/src/main/java/com/skynex/app/MainActivity.java` → `hideSystemBars()`：`WindowInsetsControllerCompat.hide(systemBars())` + `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`（上滑可临时呼出）；`onWindowFocusChanged`/`onResume` 里重新隐藏。窗口背景 `#0F0F0F` 兜底，WebView 直接铺满整屏（含状态栏/刘海区域），不额外让出安全区。 |
 | 真全屏（无黑边） | `decorFitsSystemWindows=false` + `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES` + `WindowInsetsControllerCompat.hide(systemBars())`，并让 WebView 直接铺满整屏（含状态栏/刘海区域）。注意 `decorFitsSystemWindows=true` 会退化成「刘海高度的安全区」，看起来就是顶部一条黑边。 |
 | 键盘不挡输入框 | `installKeyboardWatcher()` 自己量键盘高度：API 30+ 取 `WindowInsetsCompat.Type.ime()`，老系统用 `getWindowVisibleDisplayFrame()` 与 decor 底边相减；然后把高度以 **`bottomMargin`** 加到 WebView 上（**不能用 padding**：WebView 的网页视口取自 View 的 width/height，padding 只影响绘制，`window.innerHeight` 不变，页面感知不到键盘——1.0.0 就是这么踩坑的）。WebView 真的变矮后 viewport 跟着变小，输入框被顶到键盘上方。 |
+| 键盘弹出不闪黑边 | 1.0.3 起 margin 变化走动画（`animateBottomMargin()`）：系统键盘滑上来约 250ms，如果 WebView 一次性缩到位，输入框会「嗖」地跳上去、键盘还没盖住，中间露一块纯黑。现在弹出时 WebView 用 300ms **线性**缩，始终缩得比键盘慢，底边一直压在键盘顶边之上，黑块露不出来；收起时立刻恢复全高（多出来的那块显示的是页面自己的背景，不会黑）。动画进行中收到的测量抖动（≤24dp）不会打断动画。 |
 | 左→右滑返回上一页，而不是退出 | `handleBack()` + `getOnBackPressedDispatcher()`：系统返回键 / 全面屏边缘右滑返回 → 先看 `webView.canGoBack()`，有就 `goBack()`。应用自己用 `history` 锚点 + `popstate`（BackStack）实现了弹窗/面板/侧栏/手机内页的逐层返回，所以这里只需要走 history。真的退到底了才提示「再按一次返回退出应用」，2 秒内再按一次才 `moveTaskToBack`（退到后台，避免 20MB 页面重载）。键盘开着时返回键先收键盘。 |
 | 应用图标 | `assets/icon-source.jpg` 是原图，`scripts/gen-assets.ps1` 生成 `mipmap-*/ic_launcher.png`、`ic_launcher_round.png`、`ic_launcher_foreground.png`（自适应图标，前景缩进 66% 安全区）以及各密度 `splash.png`（深色背景 + 圆角白底 logo）。 |
 

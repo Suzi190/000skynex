@@ -92926,12 +92926,23 @@ async function cancelEdit() {
     renderRegexRules();
   }
 
+  // 当前来源筛选下可见的规则下标（与 renderRegexRules 的筛选口径保持一致）
+  // 「全选/批量删除」都按可见范围走，避免筛了某个预设却把别的预设的规则一起选中
+  function _visibleRegexIndexes(rules) {
+    const arr = Array.isArray(rules) ? rules : [];
+    if (_regexPkgFilter === '__all__') return arr.map((_, i) => i);
+    const want = (_regexPkgFilter === '__none__') ? '' : _regexPkgFilter;
+    const out = [];
+    arr.forEach((r, i) => { if (String((r && r.pkg) || '') === String(want)) out.push(i); });
+    return out;
+  }
+
   // 底栏「全选」图标态刷新
   function _updateRegexSelectAllIcon() {
     const iconEl = document.getElementById('regex-select-all-icon');
     if (!iconEl) return;
-    const total = (_regexRulesCache || []).length;
-    const allSelected = total > 0 && regexSelectedIdxs.size >= total;
+    const vis = _visibleRegexIndexes(_regexRulesCache || []);
+    const allSelected = vis.length > 0 && vis.every(i => regexSelectedIdxs.has(i));
     if (allSelected) {
       iconEl.style.background = 'var(--accent)';
       iconEl.style.border = '2px solid var(--accent)';
@@ -92945,13 +92956,10 @@ async function cancelEdit() {
 
   async function toggleRegexSelectAll() {
     const rules = await getRegexRules();
-    const allSelected = rules.length > 0 && regexSelectedIdxs.size >= rules.length;
-    if (allSelected) {
-      regexSelectedIdxs.clear();
-    } else {
-      regexSelectedIdxs.clear();
-      rules.forEach((_, i) => regexSelectedIdxs.add(i));
-    }
+    const vis = _visibleRegexIndexes(rules);
+    const allSelected = vis.length > 0 && vis.every(i => regexSelectedIdxs.has(i));
+    if (allSelected) vis.forEach(i => regexSelectedIdxs.delete(i));
+    else vis.forEach(i => regexSelectedIdxs.add(i));
     await renderRegexRules();
   }
 

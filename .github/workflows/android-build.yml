@@ -32,8 +32,20 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Android SDK packages
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
+          ls "$ANDROID_HOME/build-tools" 2>/dev/null || true
+          # runner 自带的 cmdline-tools 版本号会变（16.0 / latest…），取第一个可用目录。
+          # 不装 tools 包（新版本 sdkmanager 已经没有它了，会直接报错退出）。
+          SDKMANAGER=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -n1 || true)
+          if [ -n "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+            "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" || true
+          else
+            echo "no sdkmanager found, relying on preinstalled SDK"
+          fi
 
       - name: Install npm deps
         run: npm ci

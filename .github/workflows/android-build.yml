@@ -32,6 +32,25 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
+      # 固定签名：runner 上的 ~/.android/debug.keystore 每次构建都会重新生成，
+      # 导致每个 APK 签名都不同 —— 手机上装新版会报「应用未安装」，只能卸载重装（数据全丢）。
+      # 首次构建生成一个并提交回仓库，之后一直复用同一个。
+      - name: Ensure fixed signing keystore
+        run: |
+          KS=android/app/debug.keystore
+          if [ ! -f "$KS" ]; then
+            keytool -genkeypair -v -keystore "$KS" -storetype JKS \
+              -storepass skynexdebug -keypass skynexdebug \
+              -alias skynex -keyalg RSA -keysize 2048 -validity 10950 \
+              -dname "CN=skynex, OU=skynex, O=skynex, L=Beijing, ST=Beijing, C=CN"
+            git config user.name "skynex-ci"
+            git config user.email "skynex-ci@users.noreply.github.com"
+            git add -f "$KS"
+            git commit -m "chore: 固定 APK 签名 keystore（保证覆盖安装、升级不丢数据）[skip ci]"
+            git push origin HEAD:main
+          fi
+          ls -l "$KS"
+
       - name: Android SDK packages
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"

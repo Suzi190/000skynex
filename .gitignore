@@ -1,0 +1,27 @@
+# 依赖
+node_modules/
+
+# Capacitor 构建产物（www 由 scripts/sync-www.js 从根目录单文件 HTML 生成）
+www/
+dist/
+
+# Android 构建产物
+android/.gradle/
+android/build/
+android/app/build/
+android/.idea/
+android/local.properties
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+android/capacitor-cordova-android-plugins/
+
+# 产物 / 密钥
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# 系统垃圾
+.DS_Store
+Thumbs.db

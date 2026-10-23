@@ -1,0 +1,30 @@
+{
+  "name": "skynex",
+  "version": "1.0.0",
+  "private": true,
+  "description": "skynex 单文件应用 + Capacitor Android 壳",
+  "scripts": {
+    "sync": "node scripts/sync-www.js",
+    "cap:copy": "npm run sync && cap copy android",
+    "android:add": "cap add android",
+    "apk": "npm run cap:copy && cd android && gradlew.bat assembleDebug"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Suzi190/000skynex.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Suzi190/000skynex/issues"
+  },
+  "homepage": "https://github.com/Suzi190/000skynex#readme",
+  "dependencies": {
+    "@capacitor/android": "^7.6.9",
+    "@capacitor/core": "^7.6.9"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.6.9"
+  }
+}

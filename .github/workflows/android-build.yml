@@ -1,0 +1,78 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Generate www/ from single-file HTML
+        run: node scripts/sync-www.js
+
+      - name: Capacitor copy into android project
+        run: npx cap copy android
+
+      - name: Build debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/debug/*.apk "out/skynex-debug.apk"
+          ls -lh out
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skynex-debug-apk
+          path: out/skynex-debug.apk
+          retention-days: 30
+
+      # 打一个滚动的 latest-apk 标签并挂上 APK，方便手机直接点链接下载
+      - name: Publish rolling release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-apk
+          name: skynex APK (latest)
+          body: |
+            自动构建的调试版 APK（commit ${{ github.sha }}）。
+            直接点下方 `skynex-debug.apk` 下载安装即可。
+          files: out/skynex-debug.apk
+          prerelease: true
+          fail_on_unmatched_files: true

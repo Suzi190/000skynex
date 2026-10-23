@@ -1,0 +1,15 @@
+{
+  "appId": "com.skynex.app",
+  "appName": "skynex",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#0f0f0f",
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false,
+    "captureInput": false,
+    "adjustMarginsForEdgeToEdge": "disable"
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

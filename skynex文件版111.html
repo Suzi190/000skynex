@@ -33892,6 +33892,9 @@ html.standalone-file #app {
                   <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
                 </button>
                 <div id="prompt-menu-dropdown" class="custom-dropdown hidden" style="right:0;left:auto;min-width:140px">
+                  <div class="custom-dropdown-item" onclick="Prompts.toggleMenu();Prompts.openPresetPicker('global')">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg> 切换预设
+                  </div>
                   <div class="custom-dropdown-item" onclick="Prompts.toggleMenu();Prompts.add()">
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg> 新建
                   </div>
@@ -33937,6 +33940,8 @@ html.standalone-file #app {
               </div>
             </div>
             <input type="file" id="regex-import-picker" accept=".json,application/json" style="display:none" onchange="Settings.importRegexRules(this)">
+            <!-- 来源（预设包）筛选：有 pkg 归属的规则才会显示这一排 -->
+            <div id="regex-pkg-filter" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
             <div id="regex-rules-list"></div>
             <!-- 新建按钮 -->
             <button type="button" onclick="Settings.addRegex()" class="btn-full" style="margin-top:12px;display:flex;align-items:center;justify-content:center;gap:6px">
@@ -75958,11 +75963,19 @@ const Prompts = (() => {
     const active = presets.find(p => p.id === activeId);
     const label = active ? active.name : '无预设（显示全部）';
     const cnt = active ? (active.enabledIds || []).length : 0;
+    // 预设包还带一批配套正则，条数一起显示（用同步缓存，避免每次渲染都读库）
+    let rxCnt = 0;
+    if (active && active.pkg) {
+      try {
+        const _rr = (typeof Settings !== 'undefined' && Settings.getRegexRulesSync) ? (Settings.getRegexRulesSync() || []) : [];
+        rxCnt = _rr.filter(r => r && String(r.pkg || '') === String(active.pkg)).length;
+      } catch (_) { rxCnt = 0; }
+    }
     el.innerHTML = `
       <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${active ? 'var(--accent)' : 'var(--text-secondary)'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M4 4h6v6H4z"/><path d="M14 4h6v6h-6z"/><path d="M4 14h6v6H4z"/><path d="m17 17 3 3-3 3"/><path d="M14 17h6"/></svg>
       <span style="font-size:12px;color:var(--text-secondary);flex-shrink:0">预设</span>
       <button type="button" onclick="Prompts.openPresetPicker('${scope}')" style="flex:1;min-width:0;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:5px 10px;border-radius:var(--radius);border:1px solid ${active ? 'var(--accent)' : 'var(--border)'};background:var(--bg);color:${active ? 'var(--accent)' : 'var(--text)'};font-size:12px;cursor:pointer;font-family:inherit">
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${Utils.escapeHtml(label)}${active ? `（${cnt}条）` : ''}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${Utils.escapeHtml(label)}${active ? `（${cnt}条${rxCnt ? ` · ${rxCnt}条正则` : ''}）` : ''}</span>
         <span style="flex-shrink:0;color:var(--text-secondary)">▾</span>
       </button>
       ${active ? `<button type="button" onclick="Prompts.clearActivePreset('${scope}')" title="取消预设" style="flex-shrink:0;padding:5px 9px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg);color:var(--text-secondary);font-size:12px;cursor:pointer">×</button>` : ''}`;
@@ -75971,20 +75984,31 @@ const Prompts = (() => {
   // 预设选择弹层：列出全部预设 + 新建/重命名/删除/（对话级）应用到本世界观
   async function openPresetPicker(scope) {
     const isConv = scope === 'conv';
+    // 老数据：把「导入过但没有预设记录」的分组补成可切换的条目
+    try { await _ensurePkgPresets(); } catch (e) { console.warn('[openPresetPicker]', e); }
     const presets = await getPresets();
     const activeId = isConv ? _ovActivePresetId : _activePresetId;
+    // 预设包的正则条数：切预设时会整包开关，列表里先说清楚
+    let _rules = [];
+    try { _rules = (typeof Settings !== 'undefined' && Settings.getRegexRulesSync) ? (Settings.getRegexRulesSync() || []) : []; } catch (_) { _rules = []; }
+    const _rxCountOf = (p) => {
+      if (!p || !p.pkg) return 0;
+      return _rules.filter(r => r && String(r.pkg || '') === String(p.pkg)).length;
+    };
     const overlay = document.createElement('div');
     overlay.id = 'prompt-preset-sheet';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.5);display:flex;align-items:flex-end;justify-content:center';
     const rows = presets.length ? presets.map(p => {
       const on = p.id === activeId;
       const n = (p.enabledIds || []).length;
+      const rxN = _rxCountOf(p);
       return `
       <div style="display:flex;align-items:center;gap:6px;padding:4px 12px">
         <button type="button" data-apply="${p.id}" style="flex:1;min-width:0;text-align:left;padding:11px 12px;border-radius:var(--radius);border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'var(--accent)' : 'var(--bg-tertiary)'};color:${on ? 'var(--on-accent)' : 'var(--text)'};font-size:14px;cursor:pointer;font-family:inherit">
-          <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${Utils.escapeHtml(p.name)}</span>
-          <span style="display:block;font-size:11px;opacity:.75;margin-top:2px">${n} 条提示词${on ? ' · 使用中' : ''}</span>
+          <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.pkg ? '📦 ' : ''}${Utils.escapeHtml(p.name)}</span>
+          <span style="display:block;font-size:11px;opacity:.75;margin-top:2px">${n} 条提示词${rxN ? ` · ${rxN} 条正则` : ''}${on ? ' · 使用中' : ''}</span>
         </button>
+        ${p.pkg ? `<button type="button" data-upd="${p.id}" title="用当前开关状态更新这个预设" style="flex-shrink:0;padding:8px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;line-height:0"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>` : ''}
         ${isConv ? `<button type="button" data-wv="${p.id}" title="应用到本世界观全部对话" style="flex-shrink:0;padding:8px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;line-height:0"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button>` : ''}
         <button type="button" data-ren="${p.id}" title="重命名" style="flex-shrink:0;padding:8px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;line-height:0"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></button>
         <button type="button" data-del="${p.id}" title="删除" style="flex-shrink:0;padding:8px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--danger);cursor:pointer;line-height:0"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg></button>
@@ -76021,6 +76045,18 @@ const Prompts = (() => {
     overlay.querySelectorAll('[data-del]').forEach(b => {
       b.onclick = () => { close(); deletePreset(b.getAttribute('data-del'), scope); };
     });
+    overlay.querySelectorAll('[data-upd]').forEach(b => {
+      b.onclick = async () => {
+        const pid = b.getAttribute('data-upd');
+        const ps = await getPresets();
+        const p2 = ps.find(x => x.id === pid);
+        if (!p2 || !p2.pkg) return;
+        await _syncPresetFromPkg(p2.pkg, p2.name);
+        close();
+        await _renderPresetBar(scope);
+        UI.showToast(`已用当前开关状态更新「${p2.name}」`, 2000);
+      };
+    });
     overlay.querySelectorAll('[data-wv]').forEach(b => {
       b.onclick = () => { close(); applyPresetToWorldview(b.getAttribute('data-wv')); };
     });
@@ -76044,19 +76080,36 @@ const Prompts = (() => {
       // 对话级：只改临时覆盖态，点保存才落库
       _ovActivePresetId = presetId;
       _overrideGroup = '全部'; // 重置分组，避免和预设筛选叠加成空列表
-      list.forEach(p => { _overrideTemp[p.id] = ids.has(p.id); });
+      const _pkgC = preset.pkg ? String(preset.pkg) : '';
+      list.forEach(p => {
+        if (!_pkgC) { _overrideTemp[p.id] = ids.has(p.id); return; }
+        // 预设包：只覆盖「属于某个包」的提示词，手写的沿用全局设置
+        const _ownerC = (p.st && p.st.preset) ? String(p.st.preset) : '';
+        if (!_ownerC) return;
+        _overrideTemp[p.id] = (_ownerC === _pkgC) && ids.has(p.id);
+      });
       await _renderPresetBar('conv');
       await _renderOverrideList(list);
-      UI.showToast(`已套用「${preset.name}」，记得点保存`, 2000);
+      UI.showToast(`已套用「${preset.name}」，记得点保存（正则按全局预设）`, 2200);
     } else {
       // 全局：直接改每条提示词的 enabled 并落库（不二次确认，操作频繁）
       _activePresetId = presetId;
       selectedGroup = '全部'; // 同上：预设视图下先回到「全部」，否则旧分组会把列表筛空
-      list.forEach(p => { p.enabled = ids.has(p.id); });
+      const _pkg = preset.pkg ? String(preset.pkg) : '';
+      list.forEach(p => {
+        if (!_pkg) { p.enabled = ids.has(p.id); return; }
+        // 预设包：只开关「别的预设包」里的提示词；
+        // 自己手写的（没有 st.preset）保持用户原本的设置，不被预设连坐。
+        const _owner = (p.st && p.st.preset) ? String(p.st.preset) : '';
+        if (!_owner) return;
+        p.enabled = (_owner === _pkg) && ids.has(p.id);
+      });
       await saveAll(list);
+      // 配套正则一起切：本包开、其它包关（手写规则不动）
+      const _rx = await _applyPresetRegex(preset);
       await _renderPresetBar('global');
       await render();
-      UI.showToast(`已套用预设「${preset.name}」`, 1800);
+      UI.showToast(`已套用预设「${preset.name}」` + (_rx.on ? `（${_rx.on} 条正则）` : ''), 1800);
     }
   }
 
@@ -76107,12 +76160,37 @@ const Prompts = (() => {
     const presets = await getPresets();
     const p = presets.find(x => x.id === presetId);
     if (!p) return;
-    if (!await UI.showConfirm('删除预设', `确定删除预设「${p.name}」？提示词本身不会被删除。`)) return;
+    if (!await UI.showConfirm('删除预设', p.pkg
+      ? `确定删除预设「${p.name}」？\n\n下一步可以选择要不要连它的提示词和正则一起删。`
+      : `确定删除预设「${p.name}」？\n\n只删这条预设记录，提示词仍留在库里（「全部」视图里能看到）。`)) return;
+    let delContent = false;
+    if (p.pkg) {
+      // 预设包：问一句要不要连内容一起删（默认不删，防止误删一整包提示词）
+      const list = await getAll();
+      const nP = list.filter(x => x && x.st && String(x.st.preset) === String(p.pkg)).length;
+      let nR = 0;
+      try { nR = (await _getRegexRulesSafe()).filter(r => r && String(r.pkg || '') === String(p.pkg)).length; } catch (_) { nR = 0; }
+      if (nP || nR) {
+        delContent = await UI.showConfirm('同时删除内容？',
+          `「${p.name}」里有 ${nP} 条提示词、${nR} 条正则。\n\n确定＝一起删除（不可恢复）\n取消＝只删预设记录，内容留在库里`);
+      }
+      if (delContent) {
+        if (nP) await saveAll(list.filter(x => !(x && x.st && String(x.st.preset) === String(p.pkg))));
+        if (nR) {
+          try {
+            const rules = await _getRegexRulesSafe();
+            await Settings.saveRegexRules(rules.filter(r => !(r && String(r.pkg || '') === String(p.pkg))));
+            try { Settings.renderRegexRules(); } catch (_) {}
+          } catch (e) { console.warn('[deletePreset]', e); }
+        }
+      }
+    }
     await savePresets(presets.filter(x => x.id !== presetId));
     if (_activePresetId === presetId) _activePresetId = '';
     if (_ovActivePresetId === presetId) _ovActivePresetId = '';
     await _renderPresetBar(scope);
-    UI.showToast('预设已删除', 1400);
+    if (delContent) { try { await render(); } catch (_) {} }
+    UI.showToast(delContent ? '预设及其内容已删除' : '预设已删除', 1400);
   }
 
   // 把预设套用到当前世界观下的所有对话（写各 conv 的 promptOverrides）
@@ -76155,6 +76233,113 @@ const Prompts = (() => {
     await _renderPresetBar('conv');
     await _renderOverrideList(list);
     UI.showToast(`已应用到 ${targets.length} 个对话`, 2200);
+  }
+
+  // ===== 预设包（一整套：提示词组 + 配套正则） =====
+  // group 名就是包的唯一标识：导入 ST 预设时提示词都落在 group=文件名 下，
+  // 同一文件里的正则也打上同名 pkg。切换预设时只动这两类内容，
+  // 手写的提示词 / 手写正则完全不受影响（以前正则全糊在全局列表里，只能用不能分）。
+  function _regexKeyOf(r) {
+    if (r && r.stId) return 'id:' + String(r.stId);
+    return 'sig:' + [String((r && r.pattern) || ''), String((r && r.flags) || 'g'),
+      String((r && r.replacement) || ''), String((r && r.scope) || 'all')].join('\u0000');
+  }
+
+  async function _getRegexRulesSafe() {
+    try {
+      const rr = (typeof Settings !== 'undefined' && Settings.getRegexRules) ? await Settings.getRegexRules() : [];
+      return Array.isArray(rr) ? rr : [];
+    } catch (_) { return []; }
+  }
+
+  // 把某个 group 的提示词 + 正则汇总成一条预设记录（存在则就地更新）
+  async function _syncPresetFromPkg(group, label) {
+    if (!group) return null;
+    const list = await getAll();
+    const inGroup = list.filter(p => p && String(p.group || '') === String(group));
+    // 优先只认「带 st.preset 归属」的那些；没有归属信息时（老数据）退回整组
+    const owned = inGroup.filter(p => p.st && String(p.st.preset || '') === String(group));
+    const mine = owned.length ? owned : inGroup;
+    if (!mine.length) return null;
+    const rules = await _getRegexRulesSafe();
+    const mineRules = rules.filter(r => r && String(r.pkg || '') === String(group));
+    const presets = await getPresets();
+    let p = presets.find(x => x && String(x.pkg || '') === String(group));
+    if (!p) {
+      p = { id: 'pkg_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), createdAt: Date.now() };
+      presets.push(p);
+    }
+    p.name = String(label || group).slice(0, 60);
+    p.pkg = String(group);
+    // enabledIds：该包里在酒馆就开着的那部分（切过来时按它开，其余留关）
+    p.enabledIds = mine.filter(x => x.enabled).map(x => x.id);
+    p.regexKeys = mineRules.map(_regexKeyOf);
+    p.regexOffKeys = mineRules.filter(r => r.enabled === false).map(_regexKeyOf);
+    p.updatedAt = Date.now();
+    await savePresets(presets);
+    return p;
+  }
+
+  // 老数据修复：早先导入的预设只有 group、没有对应的预设记录，按 group 补出来。
+  // 只建条目，不自动切换，避免一打开设置页就把用户的开关全改掉。
+  async function _ensurePkgPresets() {
+    const list = await getAll();
+    const groups = [];
+    list.forEach(p => {
+      const g = (p && p.st && p.st.preset) ? String(p.st.preset) : '';
+      if (g && !groups.includes(g)) groups.push(g);
+    });
+    if (!groups.length) return 0;
+    const presets = await getPresets();
+    const have = new Set(presets.map(x => (x && x.pkg) ? String(x.pkg) : '').filter(Boolean));
+    const rules = await _getRegexRulesSafe();
+    let added = 0;
+    for (const g of groups) {
+      if (have.has(g)) continue;
+      const mine = list.filter(p => p && p.st && String(p.st.preset) === g);
+      if (!mine.length) continue;
+      const mineRules = rules.filter(r => r && String(r.pkg || '') === g);
+      presets.push({
+        id: 'pkg_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        name: g.slice(0, 60),
+        pkg: g,
+        enabledIds: mine.filter(x => x.enabled).map(x => x.id),
+        regexKeys: mineRules.map(_regexKeyOf),
+        regexOffKeys: mineRules.filter(r => r.enabled === false).map(_regexKeyOf),
+        createdAt: Date.now()
+      });
+      added++;
+    }
+    if (added) await savePresets(presets);
+    return added;
+  }
+
+  // 切换预设时同步它配套的正则：本包全开、其它包关闭。
+  // 手写规则（无 pkg）不动；没有对应预设的包（例如只导了正则文件）也不动，免得被误关。
+  async function _applyPresetRegex(preset) {
+    const group = (preset && preset.pkg) ? String(preset.pkg) : '';
+    if (!group) return { changed: 0, on: 0 };
+    const rules = await _getRegexRulesSafe();
+    if (!rules.length) return { changed: 0, on: 0 };
+    const presets = await getPresets();
+    const known = new Set(presets.map(x => (x && x.pkg) ? String(x.pkg) : '').filter(Boolean));
+    const off = new Set(preset.regexOffKeys || []);
+    let changed = 0, on = 0;
+    rules.forEach(r => {
+      if (!r || !r.pkg) return;
+      const pkg = String(r.pkg);
+      if (!known.has(pkg)) return;
+      const want = (pkg === group) && !off.has(_regexKeyOf(r));
+      if (want) on++;
+      if (r.enabled !== want) { r.enabled = want; changed++; }
+    });
+    if (changed) {
+      try {
+        await Settings.saveRegexRules(rules);
+        try { Settings.renderRegexRules(); } catch (_) {}
+      } catch (e) { console.warn('[Prompts._applyPresetRegex]', e); }
+    }
+    return { changed, on };
   }
 
   async function getAll() {
@@ -77590,28 +77775,33 @@ const Prompts = (() => {
       return;
     }
     const fileName = String(file.name || '').replace(/\.json$/i, '');
+    // 预设包名：必须和 _parseAndImport 里的 group 用同一个值，
+    // 提示词（group）和配套正则（pkg）靠它绑定成「一套」，之后才能整包切换。
+    const pkgName = (fileName || '导入').slice(0, 30);
     try {
       // ST 正则：预设里可能夹带（regex_scripts / extensions.regex_scripts），
       // 也可能是纯正则脚本文件（数组元素带 findRegex）
       const stRegex = _stCollectRegexScripts(data);
       const hasPrompts = _stHasPromptArray(data);
       if (stRegex.length && !hasPrompts) {
-        const rr = await Settings.importStRegexScripts(stRegex, { noteTag: '[ST]' });
+        const rr = await Settings.importStRegexScripts(stRegex, { noteTag: '[ST]', pkg: pkgName });
         await UI.showAlert('已导入正则', _stRegexResultText(rr, fileName));
         return;
       }
       if (!hasPrompts) throw new Error('未找到 prompts 数组');
 
+      const _stBody = _stPickPreset(data) || (Array.isArray(data.prompts) ? data : null);
+      const _presetLabel = String((_stBody && (_stBody.name || _stBody.preset_name)) || fileName || '导入预设').trim();
       const result = await _parseAndImport(data, fileName);
       let msg = `已导入 ${result.imported} 条提示词`;
       if (result.updated) msg += `，更新 ${result.updated} 条`;
       if (result.skipped) msg += `（跳过 ${result.skipped} 条空内容/占位）`;
       UI.showToast(msg, 2600);
-      // 同文件里附带的 ST 正则也一并导入（按需求放全局）
+      // 同文件里附带的 ST 正则也一并导入：打上预设包标记，切换预设时跟着整包开关
       if (stRegex.length) {
-        const rr = await Settings.importStRegexScripts(stRegex, { noteTag: '[ST]' });
+        const rr = await Settings.importStRegexScripts(stRegex, { noteTag: '[ST]', pkg: pkgName });
         const _n = (rr.added || 0) + (rr.updated || 0);
-        UI.showToast(_n ? `同时导入 ${_n} 条 ST 正则（全局）` : 'ST 正则已存在，无变化', 2600);
+        UI.showToast(_n ? `同时导入 ${_n} 条正则（随预设切换）` : '附带的 ST 正则已存在，无变化', 2600);
         if (rr.skipped && rr.skipped.length) {
           console.info('[importPreset] 已跳过的正则：', rr.skipped.join('、'));
         }
@@ -77619,7 +77809,17 @@ const Prompts = (() => {
       if (result.samplerCount) {
         UI.showToast(`已记录 ${result.samplerCount} 个采样参数（仅作参考，不自动应用）`, 3000);
       }
-      render();
+      // 关键一步：把这一整套（提示词组 + 配套正则）建成一条预设记录，之后才能一键切换
+      const pkgPreset = await _syncPresetFromPkg(pkgName, _presetLabel);
+      await render();
+      if (pkgPreset) {
+        const _rn = (pkgPreset.regexKeys || []).length;
+        const go = await UI.showConfirm(`切换到「${pkgPreset.name}」？`,
+          `已单独整理成一个预设：${pkgPreset.enabledIds.length} 条提示词${_rn ? `、${_rn} 条配套正则` : ''}。\n\n`
+          + '确定＝立即启用它（同时关掉其它预设包的内容，手写的提示词/正则不动）\n'
+          + '取消＝先存着，之后在「提示词」页顶部的预设栏一键切换');
+        if (go) await applyPreset(pkgPreset.id, 'global');
+      }
     } catch(e) {
       console.error('[Prompts.importPreset]', e);
       await UI.showAlert('导入失败', '格式不支持或内容为空。\n\n' + (e.message || ''));
@@ -91567,6 +91767,8 @@ let funcManageMode = { summary: false, memory: false, vision: false, gaiden: fal
 let funcSelectedIds = { summary: new Set(), memory: new Set(), vision: new Set(), gaiden: new Set(), worldvoice: new Set(), backstage: new Set(), tts: new Set(), draw: new Set(), suggest: new Set(), innerworld: new Set() };
   let regexManageMode = false;
   let regexSelectedIdxs = new Set();
+  // 正则页「按来源（预设包）筛选」：'__all__' 全部 / '__none__' 手写无来源 / 其它=包名
+  let _regexPkgFilter = '__all__';
 
   const PRESET_FIELDS = [
     { id: 'sp-name', key: 'name', def: '默认' },
@@ -92587,6 +92789,7 @@ async function cancelEdit() {
     const rules = await getRegexRules();
 
     if (rules.length === 0) {
+      _renderRegexPkgChips([]);
       container.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">暂无规则</p>';
       return;
     }
@@ -92594,7 +92797,24 @@ async function cancelEdit() {
     // 角色标签要显示名字，渲染前先强制重读角色卡列表（刚导入的卡也要能显示）
     await _loadRegexCharOptions(true);
 
-    container.innerHTML = rules.map((r, i) => {
+    // 来源（预设包）筛选：只影响显示，操作仍用原数组下标，避免和索引型选中态串位
+    _renderRegexPkgChips(rules);
+    const _rows = [];
+    rules.forEach((r, i) => {
+      const _pkgName = (r && r.pkg) ? String(r.pkg) : '';
+      if (_regexPkgFilter !== '__all__') {
+        const want = (_regexPkgFilter === '__none__') ? '' : _regexPkgFilter;
+        if (_pkgName !== want) return;
+      }
+      _rows.push({ r, i });
+    });
+    if (!_rows.length) {
+      container.innerHTML = `<p style="color:var(--text-secondary);font-size:13px">这个来源下没有规则，点上方「全部」看全部 ${rules.length} 条</p>`;
+      if (regexManageMode) _updateRegexSelectAllIcon();
+      return;
+    }
+
+    container.innerHTML = _rows.map(({ r, i }) => {
       const isSelected = regexSelectedIdxs.has(i);
       return `
       <div class="card" style="opacity:${r.enabled === false ? '0.5' : '1'};padding:10px 12px;background:var(--bg-tertiary);margin-bottom:8px;cursor:${regexManageMode ? 'default' : 'pointer'}" onclick="${regexManageMode ? `Settings.toggleRegexSelect(${i})` : `Settings.editRegex(${i})`}">
@@ -92615,12 +92835,53 @@ async function cancelEdit() {
           <span style="font-size:11px;color:var(--text-secondary);flex-shrink:0">${r.flags || 'g'}</span>
           ${(() => { const sc = r.scope || 'all'; const label = { all:'全部', chat:'主线', backstage:'后台', phone:'手机' }[sc] || '全部'; return `<span style="font-size:10px;color:var(--accent);background:rgba(0,0,0,0.2);padding:1px 6px;border-radius:8px;flex-shrink:0">${label}</span>`; })()}
           ${r.timing === 'display' ? `<span style="font-size:10px;color:var(--text-secondary);background:rgba(0,0,0,0.2);padding:1px 6px;border-radius:8px;flex-shrink:0">仅显示</span>` : ''}
+          ${r.pkg ? `<span title="该规则随预设一起启用/停用" style="font-size:10px;color:var(--text);background:var(--bg);border:1px solid var(--border);padding:1px 6px;border-radius:8px;flex-shrink:0;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📦 ${Utils.escapeHtml(String(r.pkg))}</span>` : ''}
           ${r.charId ? `<span title="仅对该角色生效" style="font-size:10px;color:var(--text);background:var(--accent);opacity:0.85;padding:1px 6px;border-radius:8px;flex-shrink:0;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🎭 ${Utils.escapeHtml(_regexCharName(r.charId))}</span>` : ''}
         </div>
         ${r.note ? `<p style="font-size:11px;color:var(--text-secondary);margin-top:4px;margin-bottom:0">${Utils.escapeHtml(r.note)}</p>` : ''}
       </div>
     `}).join('');
     if (regexManageMode) _updateRegexSelectAllIcon();
+  }
+
+  // ===== 正则来源（预设包）筛选 =====
+  // 导入 ST 预设时，配套正则会打上 pkg（=预设名）。这里按来源分片显示，
+  // 避免不同预设的正则全部糊在一条长列表里。
+  function _renderRegexPkgChips(rules) {
+    const host = document.getElementById('regex-pkg-filter');
+    if (!host) return;
+    const arr = Array.isArray(rules) ? rules : [];
+    const pkgs = [];
+    arr.forEach(r => {
+      const p = (r && r.pkg) ? String(r.pkg) : '';
+      if (p && !pkgs.includes(p)) pkgs.push(p);
+    });
+    if (!pkgs.length) {
+      // 没有任何归属信息（老数据/纯手写规则）时整排隐藏，不占位置
+      _regexPkgFilter = '__all__';
+      host.style.display = 'none';
+      host.innerHTML = '';
+      return;
+    }
+    // 选中的来源已不存在（例如整个预设包被删了）→ 自动回到「全部」，避免列表空白
+    if (_regexPkgFilter !== '__all__' && _regexPkgFilter !== '__none__' && !pkgs.includes(_regexPkgFilter)) {
+      _regexPkgFilter = '__all__';
+    }
+    // 包名可能带引号/中文，统一 encodeURIComponent 后再塞进 onclick
+    const _enc = (v) => encodeURIComponent(String(v)).replace(/'/g, '%27');
+    const chip = (label, val) => {
+      const on = (_regexPkgFilter === val);
+      return `<button type="button" onclick="Settings._setRegexPkgFilter(decodeURIComponent('${_enc(val)}'))" style="padding:4px 10px;border-radius:12px;border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'var(--accent)' : 'var(--bg-tertiary)'};color:${on ? 'var(--on-accent)' : 'var(--text-secondary)'};font-size:12px;cursor:pointer;white-space:nowrap;max-width:46vw;overflow:hidden;text-overflow:ellipsis">${label}</button>`;
+    };
+    let html = chip('全部', '__all__') + chip('手写/无来源', '__none__');
+    pkgs.forEach(p => { html += chip('📦 ' + Utils.escapeHtml(p), p); });
+    host.style.display = 'flex';
+    host.innerHTML = html;
+  }
+
+  async function _setRegexPkgFilter(val) {
+    _regexPkgFilter = String(val || '__all__');
+    await renderRegexRules();
   }
 
   function toggleRegexSelect(idx) {
@@ -92906,10 +93167,13 @@ async function cancelEdit() {
         skipped.push(String((r && (r.scriptName || r.name)) || '(未命名)'));
         continue;
       }
+      // 归属标记：随预设导入的规则记下预设名，切换预设时按它整包开关
+      if (opts.pkg) one.pkg = String(opts.pkg);
       normalized.push(one);
     }
     const res = await _upsertRegexRules(normalized);
-    return { added: res.added, updated: res.updated, skipped, total: res.total };
+    // rules 回传归一化后的规则，调用方要用它算「这包正则有哪些」的 key
+    return { added: res.added, updated: res.updated, skipped, total: res.total, rules: normalized };
   }
 
   // 导入正则规则（追加/更新）。无参=点击触发文件选择器；传入 input 元素=读取所选文件。
@@ -94013,6 +94277,7 @@ else if (type === 'tts') { list = ttsPresets; currentId = currentTtsId; switchFn
     _toggleRegexScopeDropdown, _selectRegexScope,
     _toggleRegexTimingDropdown, _selectRegexTiming,
     toggleRegex, removeRegex, renderRegexRules,
+    _setRegexPkgFilter,
     toggleRegexSelect, toggleRegexManageMode, exitRegexManageMode, batchDeleteRegex,
     toggleRegexSelectAll, exportSelectedRegex, exportSelectedRegexAsST, importRegexRules,
     _toggleRegexTest, _runRegexTest,

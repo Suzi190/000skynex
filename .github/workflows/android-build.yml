@@ -94,6 +94,13 @@ jobs:
           path: out/skynex-debug.apk
           retention-days: 30
 
+      - name: Read app version
+        id: ver
+        run: |
+          VN=$(grep -m1 'versionName' android/app/build.gradle | sed -E 's/.*versionName[[:space:]]+"?([^"]+)"?.*/\1/')
+          VC=$(grep -m1 'versionCode' android/app/build.gradle | sed -E 's/.*versionCode[[:space:]]+([0-9]+).*/\1/')
+          echo "label=$VN ($VC)" >> "$GITHUB_OUTPUT"
+
       # 打一个滚动的 latest-apk 标签并挂上 APK，方便手机直接点链接下载
       - name: Publish rolling release
         if: github.ref == 'refs/heads/main'
@@ -102,7 +109,7 @@ jobs:
           tag_name: latest-apk
           name: skynex APK (latest)
           body: |
-            自动构建的调试版 APK（commit ${{ github.sha }}）。
+            版本 ${{ steps.ver.outputs.label }} · 自动构建的调试版 APK（commit ${{ github.sha }}）。
             直接点下方 `skynex-debug.apk` 下载安装即可。
           files: out/skynex-debug.apk
           prerelease: true
